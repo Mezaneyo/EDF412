@@ -793,20 +793,20 @@
         </div>
 
         <div class="hero">
-          <div class="hero-tag">NCE 2026,  Lecturer: Mina</div>
+          <div class="hero-tag">NCE 2026, Lecturer: Mina</div>
           <h1>History of <em>Educational</em> Thought (EDF412)</h1>
-        
+         
         </div>
       </div>
 
       <div class="features">
         <div class="feature">
           <div class="feature-icon">📚</div>
-          <span>From Plato to contemporary pedagogy</span>
+          
         </div>
         <div class="feature">
           <div class="feature-icon">🧠</div>
-          <span>Critical analysis of educational ideas</span>
+          
         </div>
         <div class="feature">
           <div class="feature-icon">✏️</div>
@@ -850,7 +850,7 @@
           <div class="grid-2">
             <div class="field">
               <label for="regNumber">Reg Number <span class="req">*</span></label>
-              <input type="text" id="regNumber" name="regNumber" placeholder="NCE/SCI/15269/23" autocomplete="off">
+              <input type="text" id="regNumber" name="regNumber" placeholder="NCE/SCI/33443/23" autocomplete="off">
               <div class="field-status" id="regStatus"></div>
               <div class="error-msg" id="errRegNumber">Registration number is required.</div>
             </div>
@@ -895,7 +895,7 @@
           <div class="find-row">
             <div class="field">
               <label for="lookupReg">Reg Number</label>
-              <input type="text" id="lookupReg" placeholder="2025/EDF/412" autocomplete="off">
+              <input type="text" id="lookupReg" placeholder="NCE/NG/SCI/4545/23" autocomplete="off">
             </div>
             <button type="button" class="btn btn-primary" id="lookupBtn">
               <span id="lookupBtnText">Find</span>
@@ -906,7 +906,7 @@
         <!-- Result card -->
         <div class="result-card" id="resultCard"></div>
 
-        <!-- Edit form (hidden until a record is found) -->
+        <!-- Edit form -->
         <div id="editPanel" style="display:none;">
           <div class="edit-banner" id="editBanner">
             <span>✏️</span> <span>Edit the fields below and click <strong>Save Changes</strong>.</span>
@@ -983,6 +983,7 @@
     console.log('✅ Firebase initialized:', firebaseConfig.projectId);
 
     const COLLECTION = 'edf412_registrations';
+    const ACTIVITY_COLLECTION = 'edf412_registrations_activity';
 
     // ============================================================
     // DOM refs
@@ -1196,7 +1197,9 @@
           sex: sexRadio.value,
           courseCode: 'EDF412',
           courseTitle: 'History of Educational Thought',
-          submittedAt: firebase.firestore.FieldValue.serverTimestamp()
+          submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          checkCount: 0,
+          updateCount: 0
         });
 
         showToast('Registration complete! Welcome aboard.', 'success');
@@ -1218,7 +1221,7 @@
     });
 
     // ============================================================
-    // CHECK TAB — lookup
+    // CHECK TAB — lookup (with activity logging)
     // ============================================================
     async function findRegistration(regValue) {
       const normalized = normalizeReg(regValue);
@@ -1227,12 +1230,10 @@
         return;
       }
 
-      // Loading state
       const orig = lookupBtnText.textContent;
       lookupBtn.disabled = true;
       lookupBtnText.innerHTML = '<span class="spinner spinner-dark"></span>';
 
-      // Hide previous edit
       editPanel.style.display = 'none';
       editBanner.classList.remove('show');
       resultCard.className = 'result-card';
@@ -1244,7 +1245,6 @@
           .get();
 
         if (snap.empty) {
-          // NOT FOUND
           currentFoundRecord = null;
           resultCard.className = 'result-card show not-found';
           resultCard.innerHTML = `
@@ -1257,10 +1257,19 @@
             </div>`;
           showToast('No registration found for that Reg Number.', 'info');
         } else {
-          // FOUND
           const doc = snap.docs[0];
           const data = { id: doc.id, ...doc.data() };
           currentFoundRecord = data;
+
+          // 🔹 LOG THE CHECK — non-blocking
+          try {
+            await db.collection(COLLECTION).doc(data.id).update({
+              lastCheckedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              checkCount: firebase.firestore.FieldValue.increment(1)
+            });
+          } catch (logErr) {
+            console.warn('Could not log check event:', logErr);
+          }
 
           const sexBadge = data.sex === 'Female'
             ? '<span style="color:#be185d;font-weight:700;">Female ♀</span>'
@@ -1292,7 +1301,7 @@
                 <span class="detail-value mono">${escapeHtml(data.regNumber || '—')}</span>
               </div>
               <div class="detail-row">
-                <span class="detail-label">Subject Combo</span>
+                <span class="detail-label">Combination</span>
                 <span class="detail-value mono">${escapeHtml(data.subjectCombination || '—')}</span>
               </div>
               <div class="detail-row">
@@ -1310,7 +1319,6 @@
               </button>
             </div>`;
 
-          // Wire up "Edit my details"
           document.getElementById('startEditBtn').addEventListener('click', () => {
             openSelfEdit(data);
           });
@@ -1410,17 +1418,51 @@
         return;
       }
 
+      // Snapshot what was there BEFORE the update (for change log)
+      const before = currentFoundRecord || {};
+      const changes = {};
+      const newName = editSelfFullName.value.trim();
+      const newCombo = editSelfCombination.value.trim().toUpperCase();
+      const newSex = sexRadio.value;
+
+      if (before.fullName !== newName) changes.fullName = { from: before.fullName, to: newName };
+      if (before.subjectCombination !== newCombo) changes.subjectCombination = { from: before.subjectCombination, to: newCombo };
+      if (before.sex !== newSex) changes.sex = { from: before.sex, to: newSex };
+
+      if (!Object.keys(changes).length) {
+        showToast('No changes detected.', 'info');
+        return;
+      }
+
       const orig = saveSelfBtn.innerHTML;
       saveSelfBtn.disabled = true;
       saveSelfBtn.innerHTML = '<span class="spinner"></span> Saving…';
 
       try {
         await db.collection(COLLECTION).doc(id).update({
-          fullName: editSelfFullName.value.trim(),
-          subjectCombination: editSelfCombination.value.trim().toUpperCase(),
-          sex: sexRadio.value,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+          fullName: newName,
+          subjectCombination: newCombo,
+          sex: newSex,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          lastUpdatedBy: 'student',
+          lastUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updateCount: firebase.firestore.FieldValue.increment(1)
         });
+
+        // Write an entry into the activity log
+        try {
+          await db.collection(ACTIVITY_COLLECTION).add({
+            docId: id,
+            regNumber: before.regNumber || '',
+            fullName: newName,
+            action: 'student_update',
+            changes: changes,
+            changedFields: Object.keys(changes),
+            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        } catch (logErr) {
+          console.warn('Could not write activity log:', logErr);
+        }
 
         showToast('Your details have been updated.', 'success');
 
