@@ -25,7 +25,6 @@
       --success: #10b981;
       --danger: #ef4444;
       --warning: #f59e0b;
-      --info: #0ea5e9;
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -654,7 +653,6 @@
     .badge-reg { background: var(--surface-2); color: #475569; border: 1px solid var(--border-light); font-family: 'JetBrains Mono', 'Consolas', monospace; font-size: 0.72rem; }
     .badge-info { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; font-size: 0.7rem; }
     .badge-update { background: #ede9fe; color: #6d28d9; border: 1px solid #ddd6fe; font-size: 0.7rem; }
-    .badge-created { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; font-size: 0.7rem; }
 
     .time-cell { font-size: 0.78rem; color: var(--text-dimmer); white-space: nowrap; font-weight: 500; }
 
@@ -688,7 +686,7 @@
       border-color: #fecaca;
     }
 
-    /* Diff chips (for updated fields) */
+    /* Diff chips */
     .diff-list {
       display: flex;
       flex-direction: column;
@@ -1309,12 +1307,17 @@
 
     const toast = document.getElementById('toast');
 
+    // ============================================================
+    // State
+    // ============================================================
     let allRecords = [];
     let activityLog = [];
     let unsubscribe = null;
     let unsubscribeActivity = null;
     let pendingDeleteId = null;
     let currentTab = 'dash';
+    let recordsLoaded = false;
+    let activityLoaded = false;
 
     // ============================================================
     // Toast
@@ -1403,6 +1406,8 @@
         if (unsubscribeActivity) { unsubscribeActivity(); unsubscribeActivity = null; }
         allRecords = [];
         activityLog = [];
+        recordsLoaded = false;
+        activityLoaded = false;
       }
     });
 
@@ -1460,9 +1465,20 @@
       [tabDash, tabChecks, tabUpdates].forEach(t => t.classList.remove('active'));
       [panelDash, panelChecks, panelUpdates].forEach(p => p.classList.remove('active'));
 
-      if (tab === 'dash') { tabDash.classList.add('active'); panelDash.classList.add('active'); }
-      if (tab === 'checks') { tabChecks.classList.add('active'); panelChecks.classList.add('active'); }
-      if (tab === 'updates') { tabUpdates.classList.add('active'); panelUpdates.classList.add('active'); }
+      if (tab === 'dash') {
+        tabDash.classList.add('active');
+        panelDash.classList.add('active');
+      }
+      if (tab === 'checks') {
+        tabChecks.classList.add('active');
+        panelChecks.classList.add('active');
+        renderChecks();
+      }
+      if (tab === 'updates') {
+        tabUpdates.classList.add('active');
+        panelUpdates.classList.add('active');
+        renderUpdates();
+      }
     }
 
     tabDash.addEventListener('click', () => setTab('dash'));
@@ -1486,12 +1502,13 @@
         .onSnapshot(
           (snapshot) => {
             allRecords = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            recordsLoaded = true;
             populateComboFilter();
             updateStats();
             updateTabCounts();
             applyFilters();
-            if (currentTab === 'checks') renderChecks();
-            if (currentTab === 'updates') renderUpdates();
+            renderChecks();
+            renderUpdates();
           },
           (error) => {
             console.error(error);
@@ -1505,7 +1522,6 @@
           }
         );
 
-      // Activity log listener
       if (unsubscribeActivity) unsubscribeActivity();
       unsubscribeActivity = db.collection(ACTIVITY_COLLECTION)
         .orderBy('timestamp', 'desc')
@@ -1513,12 +1529,14 @@
         .onSnapshot(
           (snapshot) => {
             activityLog = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            activityLoaded = true;
             updateTabCounts();
-            if (currentTab === 'updates') renderUpdates();
+            renderUpdates();
           },
           (error) => {
             console.warn('Activity log error:', error.message);
-            // Not fatal — just means no activity log yet
+            activityLoaded = true;
+            renderUpdates();
           }
         );
     }
@@ -1556,7 +1574,6 @@
         const color = colorForName(name);
         const sexClass = r.sex === 'Female' ? 'badge-female' : 'badge-male';
 
-        // Activity badges
         const hasChecked = !!r.lastCheckedAt;
         const hasUpdated = !!r.lastUpdatedAt || (r.updateCount || 0) > 0;
 
@@ -1683,6 +1700,16 @@
     // Checks panel
     // ============================================================
     function renderChecks() {
+      if (!recordsLoaded) {
+        checksContainer.innerHTML = `
+          <div class="state-box">
+            <div class="loader"></div>
+            <h3>Loading check activity…</h3>
+          </div>`;
+        checksCount.textContent = 'Loading…';
+        return;
+      }
+
       const checked = allRecords
         .filter(r => r.lastCheckedAt)
         .sort((a, b) => {
@@ -1751,8 +1778,18 @@
     // Updates panel
     // ============================================================
     function renderUpdates() {
+      if (!recordsLoaded && !activityLoaded) {
+        updatesContainer.innerHTML = `
+          <div class="state-box">
+            <div class="loader"></div>
+            <h3>Loading update history…</h3>
+          </div>`;
+        updatesCount.textContent = 'Loading…';
+        return;
+      }
+
+      // If we have no activity log entries, fall back to showing records with updateCount > 0
       if (!activityLog.length) {
-        // Fall back to records with updatedAt in case activity log is empty
         const updatedRecords = allRecords
           .filter(r => r.lastUpdatedAt || (r.updateCount || 0) > 0)
           .sort((a, b) => {
@@ -1772,7 +1809,6 @@
           return;
         }
 
-        // Simple fallback table (no detailed diffs)
         const rows = updatedRecords.map(r => {
           const name = r.fullName || 'Unknown';
           const color = colorForName(name);
@@ -1814,7 +1850,6 @@
         const name = a.fullName || 'Unknown';
         const color = colorForName(name);
 
-        // Render changes
         let diffHtml = '<span style="color:#8b95ad;font-size:0.75rem;">—</span>';
         if (a.changes && Object.keys(a.changes).length) {
           diffHtml = '<div class="diff-list">' + Object.entries(a.changes).map(([field, val]) => {
@@ -1933,13 +1968,14 @@
           updateCount: firebase.firestore.FieldValue.increment(1)
         });
 
-        // Log it
         try {
           await db.collection(ACTIVITY_COLLECTION).add({
             docId: id,
             regNumber: newReg,
             fullName: editFullName.value.trim(),
             action: 'admin_update',
+            changes: {},
+            changedFields: [],
             timestamp: firebase.firestore.FieldValue.serverTimestamp()
           });
         } catch (e) { console.warn(e); }
@@ -1990,7 +2026,7 @@
     });
 
     // ============================================================
-    // CSV Export — now includes activity
+    // CSV
     // ============================================================
     function exportCSV() {
       if (!allRecords.length) { showToast('No records to export.', 'error'); return; }
@@ -2026,13 +2062,12 @@
     }
 
     // ============================================================
-    // Excel Export — main sheet + Activity sheet + Summary
+    // Excel
     // ============================================================
     function exportXLSX() {
       if (!allRecords.length) { showToast('No records to export.', 'error'); return; }
       if (typeof XLSX === 'undefined') { showToast('Excel library not loaded.', 'error'); return; }
 
-      // ---- Sheet 1: Registrations ----
       const headers = ['Full Name', 'Reg Number', 'Subject Combination', 'Sex', 'Submitted At', 'Checks', 'Last Checked', 'Updates', 'Last Updated'];
       const data = allRecords.map(r => {
         const sub = r.submittedAt?.toDate ? r.submittedAt.toDate().toLocaleString('en-GB') : '—';
@@ -2103,7 +2138,7 @@
         })
       };
 
-      // ---- Sheet 2: Activity Log ----
+      // Activity log sheet
       const logHeaders = ['Timestamp', 'Student', 'Reg Number', 'Action', 'Fields Changed', 'Before → After'];
       const logData = activityLog.map(a => {
         const changes = a.changes || {};
@@ -2150,7 +2185,7 @@
         });
       });
 
-      // ---- Sheet 3: Summary ----
+      // Summary sheet
       const total = allRecords.length;
       const females = allRecords.filter(r => r.sex === 'Female').length;
       const males = allRecords.filter(r => r.sex === 'Male').length;
